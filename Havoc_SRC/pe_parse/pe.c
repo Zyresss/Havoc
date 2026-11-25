@@ -1,6 +1,8 @@
 #include <Windows.h>
 #include <stdio.h>
 
+/*for these analytical printf's is temporary until we create the Havoc GUI and put these analytics on specific section.*/
+
 // reading file into memory 
 BOOL read_file_into_memory(
     LPCSTR file_path,
@@ -24,7 +26,7 @@ BOOL read_file_into_memory(
     );
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        printf("Error opening file : %Lu\n", GetLastError());
+        printf("Error opening file : %lu\n", GetLastError());
         return FALSE;
     }
 
@@ -67,4 +69,86 @@ BOOL parse_dos_file(
     printf("    e_lfanew:   0x%X (Offset to NT Headers)\n", pDosHeader->e_lfanew);
 
     return TRUE;
+}
+
+BOOL parse_nt_headers(
+    PBYTE Buffer
+) {
+    PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)Buffer;
+    PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)(Buffer + pDosHeader->e_lfanew);
+
+    if(pNtHeaders->Signature != IMAGE_NT_SIGNATURE) {
+        printf("Invalid NT signature. Not a PE file.\n");
+        return FALSE;
+    }
+
+    printf("[+] NT Headers:\n");
+    printf("    Signature:  0x%X (PE00)\n", pNtHeaders->Signature);
+    
+     printf("[+] File Header:\n");
+    printf("    Machine:              0x%X\n", pNtHeaders->FileHeader.Machine);
+    printf("    NumberOfSections:     %d\n", pNtHeaders->FileHeader.NumberOfSections);
+    printf("    TimeDateStamp:        0x%X\n", pNtHeaders->FileHeader.TimeDateStamp);
+    printf("    Characteristics:      0x%X\n", pNtHeaders->FileHeader.Characteristics);
+
+    printf("[+] Optional Header:\n");
+    printf("    Magic:                0x%X (%s)\n", 
+        pNtHeaders->OptionalHeader.Magic,
+        pNtHeaders->OptionalHeader.Magic == 0x20B ? "64-bit" : "32-bit"
+    );
+    printf("    AddressOfEntryPoint:  0x%X\n", pNtHeaders->OptionalHeader.AddressOfEntryPoint);
+    printf("    ImageBase:            0x%llX\n", pNtHeaders->OptionalHeader.ImageBase);
+    printf("    SizeOfImage:          0x%X\n", pNtHeaders->OptionalHeader.SizeOfImage);
+
+    return TRUE;
+}
+
+VOID parse_sections(
+    PBYTE Buffer
+) {
+    PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)Buffer;
+    PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)(Buffer + pDosHeader->e_lfanew);
+    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+
+    for(int i=0 ; i < pNtHeaders->FileHeader.NumberOfSections ; i++) {
+        printf("[+] Section %d:\n", i + 1);
+        printf("    Name:                 %.8s\n", pSectionHeader[i].Name);
+        printf("    VirtualAddress:       0x%X\n", pSectionHeader[i].VirtualAddress);
+        printf("    SizeOfRawData:        0x%X\n", pSectionHeader[i].SizeOfRawData);
+        printf("    PointerToRawData:     0x%X\n", pSectionHeader[i].PointerToRawData);
+        printf("    Characteristics:      0x%X\n", pSectionHeader[i].Characteristics);
+    }
+}
+
+// for testing
+int main(int argc, char *argv[]) {
+    
+    PBYTE Buffer = NULL;
+    DWORD FileSize = 0;
+
+    if(argc != 2) {
+        printf("Usage: %s <path_to_pe_file>\n", argv[0]);
+        return 1;
+    }
+
+
+    if(!read_file_into_memory(argv[1], &Buffer, &FileSize)) {
+        return 1;
+    }
+
+    if(!parse_dos_file(Buffer)) {
+        goto Cleanup;
+    }
+
+    if(!parse_nt_headers(Buffer)) {
+        goto Cleanup;
+    }
+
+    parse_sections(Buffer);
+
+Cleanup:
+    if(Buffer) {
+        HeapFree(GetProcessHeap(), 0, Buffer);
+    }
+    return 0;
 }
