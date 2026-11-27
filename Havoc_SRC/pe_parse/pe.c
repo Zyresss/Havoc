@@ -17,27 +17,77 @@ static BOOL are_pe_alignments_valid(const IMAGE_OPTIONAL_HEADER64 *optional_head
     DWORD section_alignment;
     DWORD file_alignment;
 
-    if (optional_header == NULL) {
+    if (optional_header == NULL)
+    {
         return FALSE;
     }
 
     section_alignment = optional_header->SectionAlignment;
     file_alignment = optional_header->FileAlignment;
 
-    if (section_alignment == 0 || file_alignment == 0 || section_alignment < file_alignment) {
+    if (section_alignment == 0 || file_alignment == 0 || section_alignment < file_alignment)
+    {
         return FALSE;
     }
 
     /* For ordinary images, FileAlignment should be a power of two from 512 to 64 KB. */
-    if (section_alignment >= 0x1000) {
+    if (section_alignment >= 0x1000)
+    {
         return file_alignment >= 0x200 && file_alignment <= 0x10000 &&
-            is_power_of_two(file_alignment);
+               is_power_of_two(file_alignment);
     }
 
     /* Low-alignment images require file and section alignment to match. */
     return file_alignment == section_alignment;
 }
 
+static BOOL rva_to_file_offset(
+    DWORD FileSize,
+    const IMAGE_OPTIONAL_HEADER64 *OptionalHeader,
+    const IMAGE_SECTION_HEADER *Sections,
+    WORD NumberOfSections,
+    DWORD Rva,
+    size_t Length,
+    DWORD *FileOffset)
+{
+    if (OptionalHeader == NULL || Sections == NULL || FileOffset == NULL || Length == 0)
+    {
+        return FALSE;
+    }
+
+    if (Rva < OptionalHeader->SizeOfHeaders)
+    {
+        if (Length > OptionalHeader->SizeOfHeaders - Rva || !range_is_valid(FileSize, Rva, Length))
+        {
+            return FALSE;
+        }
+        *FileOffset = Rva;
+        return TRUE;
+    }
+
+    for (WORD i = 0; i < NumberOfSections; i++)
+    {
+        DWORD section_rva = Sections[i].VirtualAddress;
+
+        if (Rva >= section_rva)
+        {
+            DWORD offset_in_section = Rva - section_rva;
+            DWORD raw_size = Sections[i].SizeOfRawData;
+            if (offset_in_section < raw_size && Length <= (size_t)(raw_size - offset_in_section))
+            {
+                ULONGLONG candidate = (ULONGLONG)Sections[i].PointerToRawData + offset_in_section;
+                if (candidate > MAXDWORD ||
+                    !range_is_valid(FileSize, (DWORD)candidate, Length))
+                {
+                    return FALSE;
+                }
+                *FileOffset = (DWORD)candidate;
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
 /*for these analytical printf's is temporary until we create the Havoc GUI and put these analytics on specific section.*/
 
 // reading file into memory
@@ -189,33 +239,37 @@ BOOL parse_nt_headers(
         return FALSE;
     }
 
-    if (pNtHeaders->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) {
+    if (pNtHeaders->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+    {
         printf("Unsupported machine type; expected AMD64.\n");
         return FALSE;
     }
 
-    if (pNtHeaders->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+    if (pNtHeaders->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
         printf("Unsupported optional header magic; expected PE32+.\n");
         return FALSE;
     }
 
-    if(
+    if (
         pNtHeaders->OptionalHeader.SizeOfImage == 0 ||
         pNtHeaders->OptionalHeader.SizeOfHeaders == 0 ||
         pNtHeaders->OptionalHeader.SizeOfHeaders > FileSize ||
-        pNtHeaders->OptionalHeader.SizeOfHeaders > pNtHeaders->OptionalHeader.SizeOfImage
-    ) {
+        pNtHeaders->OptionalHeader.SizeOfHeaders > pNtHeaders->OptionalHeader.SizeOfImage)
+    {
         printf("invalid image or header size.\n");
         return FALSE;
     }
 
     if (pNtHeaders->OptionalHeader.AddressOfEntryPoint != 0 &&
-        pNtHeaders->OptionalHeader.AddressOfEntryPoint >= pNtHeaders->OptionalHeader.SizeOfImage) {
+        pNtHeaders->OptionalHeader.AddressOfEntryPoint >= pNtHeaders->OptionalHeader.SizeOfImage)
+    {
         printf("Entry point is outside the image.\n");
         return FALSE;
     }
 
-    if (!are_pe_alignments_valid(&pNtHeaders->OptionalHeader)) {
+    if (!are_pe_alignments_valid(&pNtHeaders->OptionalHeader))
+    {
         printf("Invalid SectionAlignment or FileAlignment values.\n");
         return FALSE;
     }
@@ -276,7 +330,8 @@ BOOL parse_sections(
         pNtHeaders->OptionalHeader.SizeOfHeaders == 0 ||
         pNtHeaders->OptionalHeader.SizeOfHeaders > FileSize ||
         pNtHeaders->OptionalHeader.SizeOfImage == 0 ||
-        !are_pe_alignments_valid(&pNtHeaders->OptionalHeader)) {
+        !are_pe_alignments_valid(&pNtHeaders->OptionalHeader))
+    {
         printf("Invalid or unsupported x64 image metadata.\n");
         return FALSE;
     }
@@ -291,9 +346,9 @@ BOOL parse_sections(
         return FALSE;
     }
 
-    if(section_table_offset > pNtHeaders->OptionalHeader.SizeOfHeaders || 
-        section_count > ((size_t)pNtHeaders->OptionalHeader.SizeOfHeaders - section_table_offset) / sizeof(IMAGE_SECTION_HEADER)
-    ) {
+    if (section_table_offset > pNtHeaders->OptionalHeader.SizeOfHeaders ||
+        section_count > ((size_t)pNtHeaders->OptionalHeader.SizeOfHeaders - section_table_offset) / sizeof(IMAGE_SECTION_HEADER))
+    {
         printf("Section table is located outside the headers.\n");
         return FALSE;
     }
@@ -303,32 +358,38 @@ BOOL parse_sections(
 
         DWORD section_span = pSectionHeader[i].Misc.VirtualSize;
 
-        if(pSectionHeader[i].SizeOfRawData > section_span) {
+        if (pSectionHeader[i].SizeOfRawData > section_span)
+        {
             section_span = pSectionHeader[i].SizeOfRawData;
         }
 
         ULONGLONG section_end = (ULONGLONG)pSectionHeader[i].VirtualAddress + section_span;
 
-        if(section_end > pNtHeaders->OptionalHeader.SizeOfImage) {
+        if (section_end > pNtHeaders->OptionalHeader.SizeOfImage)
+        {
             printf("Section %d extends past the end of the image.\n", i + 1);
             return FALSE;
         }
 
-        if (pSectionHeader[i].VirtualAddress % pNtHeaders->OptionalHeader.SectionAlignment != 0) {
+        if (pSectionHeader[i].VirtualAddress % pNtHeaders->OptionalHeader.SectionAlignment != 0)
+        {
             printf("Section %d virtual address is not section-aligned.\n", i + 1);
             return FALSE;
         }
         // Check raw data alignment and range
-        if (pSectionHeader[i].SizeOfRawData != 0) {
+        if (pSectionHeader[i].SizeOfRawData != 0)
+        {
             if (!range_is_valid(FileSize,
                                 pSectionHeader[i].PointerToRawData,
-                                pSectionHeader[i].SizeOfRawData)) {
+                                pSectionHeader[i].SizeOfRawData))
+            {
                 printf("Section %d extends past the end of the file.\n", i + 1);
                 return FALSE;
             }
             if (pSectionHeader[i].PointerToRawData < pNtHeaders->OptionalHeader.SizeOfHeaders ||
                 pSectionHeader[i].PointerToRawData % pNtHeaders->OptionalHeader.FileAlignment != 0 ||
-                pSectionHeader[i].SizeOfRawData % pNtHeaders->OptionalHeader.FileAlignment != 0) {
+                pSectionHeader[i].SizeOfRawData % pNtHeaders->OptionalHeader.FileAlignment != 0)
+            {
                 printf("Section %d raw range is not validly aligned or overlaps headers.\n", i + 1);
                 return FALSE;
             }
@@ -341,34 +402,57 @@ BOOL parse_sections(
         printf("    PointerToRawData:     0x%X\n", pSectionHeader[i].PointerToRawData);
         printf("    Characteristics:      0x%X\n", pSectionHeader[i].Characteristics);
     }
-    
+
     // Overlap check for sections with each other
-    for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; ++i) {
+    for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; ++i)
+    {
         ULONGLONG i_virtual_start = pSectionHeader[i].VirtualAddress;
         ULONGLONG i_virtual_size = pSectionHeader[i].Misc.VirtualSize > pSectionHeader[i].SizeOfRawData
-            ? pSectionHeader[i].Misc.VirtualSize : pSectionHeader[i].SizeOfRawData;
+                                       ? pSectionHeader[i].Misc.VirtualSize
+                                       : pSectionHeader[i].SizeOfRawData;
         ULONGLONG i_raw_start = pSectionHeader[i].PointerToRawData;
         ULONGLONG i_raw_size = pSectionHeader[i].SizeOfRawData;
 
-        for (int j = i + 1; j < pNtHeaders->FileHeader.NumberOfSections; ++j) {
+        for (int j = i + 1; j < pNtHeaders->FileHeader.NumberOfSections; ++j)
+        {
             ULONGLONG j_virtual_start = pSectionHeader[j].VirtualAddress;
             ULONGLONG j_virtual_size = pSectionHeader[j].Misc.VirtualSize > pSectionHeader[j].SizeOfRawData
-                ? pSectionHeader[j].Misc.VirtualSize : pSectionHeader[j].SizeOfRawData;
+                                           ? pSectionHeader[j].Misc.VirtualSize
+                                           : pSectionHeader[j].SizeOfRawData;
             ULONGLONG j_raw_start = pSectionHeader[j].PointerToRawData;
             ULONGLONG j_raw_size = pSectionHeader[j].SizeOfRawData;
 
             BOOL virtual_overlap = i_virtual_size != 0 && j_virtual_size != 0 &&
-                i_virtual_start < j_virtual_start + j_virtual_size &&
-                j_virtual_start < i_virtual_start + i_virtual_size;
+                                   i_virtual_start < j_virtual_start + j_virtual_size &&
+                                   j_virtual_start < i_virtual_start + i_virtual_size;
             BOOL raw_overlap = i_raw_size != 0 && j_raw_size != 0 &&
-                i_raw_start < j_raw_start + j_raw_size &&
-                j_raw_start < i_raw_start + i_raw_size;
+                               i_raw_start < j_raw_start + j_raw_size &&
+                               j_raw_start < i_raw_start + i_raw_size;
 
-            if (virtual_overlap || raw_overlap) {
+            if (virtual_overlap || raw_overlap)
+            {
                 printf("Sections %d and %d overlap.\n", i + 1, j + 1);
                 return FALSE;
             }
         }
+    }
+
+    DWORD entry_point_file_offset;
+    if(pNtHeaders->OptionalHeader.AddressOfEntryPoint != 0){
+        if(!rva_to_file_offset(
+            FileSize,
+            &pNtHeaders->OptionalHeader,
+            pSectionHeader,
+            pNtHeaders->FileHeader.NumberOfSections,
+            pNtHeaders->OptionalHeader.AddressOfEntryPoint,
+            1, // Length of 1 byte to check if the entry point is valid
+            &entry_point_file_offset
+        )) {
+            printf("Entry point is outside the file.\n");
+            return FALSE;
+        }
+
+        printf("Entry point file offset: 0x%X\n", entry_point_file_offset);
     }
 
     return TRUE;
